@@ -1,0 +1,22 @@
+[theme]
+# Primary theme color (purple from your design)
+primaryColor = "#667eea"
+
+# Background color
+backgroundColor = "#ffffff"
+
+# Secondary background color (for sidebar, etc)
+secondaryBackgroundColor = "#f0f2f6"
+
+# Text color
+textColor = "#262730"
+
+# Font family
+font = "sans serif"
+
+[server]
+# Enable file watcher for hot reload
+fileWatcherType = "auto"
+
+# Max upload size (200MB)
+maxUploadSize = 200

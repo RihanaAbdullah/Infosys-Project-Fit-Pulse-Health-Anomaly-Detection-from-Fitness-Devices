@@ -1,0 +1,13 @@
+streamlit==1.31.0
+pandas==2.2.0
+numpy==1.26.3
+plotly==5.18.0
+scipy==1.11.4
+pytz==2024.1
+scikit-learn==1.4.0
+tsfresh==0.20.2
+prophet==1.1.5
+# hdbscan requires C++ compiler on Windows
+# Try: pip install hdbscan --prefer-binary
+# Or use conda: conda install -c conda-forge hdbscan
+# Alternative: Use only K-Means clustering (no hdbscan needed)
