@@ -1841,10 +1841,9 @@ def export_processed_data(processed_data: Dict[str, pd.DataFrame]):
     """Export processed data to CSV with premium styling"""
     st.markdown("""
         <div style="text-align: center; margin: 1rem 0 1rem 0;">
-            <h2 style="font-size: 2rem; font-weight: 800; background: linear-gradient(135deg, #28a745, #20c997); 
-                       -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
-                💾 Export Processed Data
-            </h2>
+           <h2 style="font-size: 2rem; font-weight: 800; color: black;">
+               💾 Export Processed Data
+           </h2>
             <p style="color: #6c757d; font-size: 1rem; margin-top: 0.5rem;">
                 Download your cleaned and processed datasets
             </p>
@@ -2152,235 +2151,90 @@ class TSFreshFeatureExtractor:
         st.plotly_chart(fig, use_container_width=True)
 
 
-class TrendModeler:
-    """Model time-series trends using Linear Regression"""
-    
+class ProphetTrendModeler:
+    """Model time-series trends using Facebook Prophet"""
     def __init__(self):
         self.models = {}
         self.forecasts = {}
         self.residuals = {}
         self.modeling_reports = {}
-    
     def fit_and_predict(self, df: pd.DataFrame, data_type: str,
                        forecast_periods: int = 100) -> Tuple[pd.DataFrame, Dict]:
-        """
-        Fit Prophet model and generate predictions
-        
-        Args:
-            df: Dataframe with 'timestamp' and metric column
-            data_type: Type of data being modeled
-            forecast_periods: Number of periods to forecast ahead
-            
-        Returns:
-            Forecast dataframe and modeling report
-        """
-        st.info(f"🔄 Modeling trends for {data_type} data...")
-        
+        st.info(f"🔄 Modeling trends for {data_type} data with Prophet...")
         report = {
             'data_type': data_type,
             'training_rows': len(df),
             'forecast_periods': forecast_periods,
             'success': False
         }
-        
-        st.write("Starting trend modeling...")
-        
         try:
-            # Identify metric column
             metric_columns = {
                 'heart_rate': 'heart_rate',
                 'steps': 'step_count',
                 'sleep': 'duration_minutes'
             }
-            
             if data_type not in metric_columns:
                 report['error'] = f"Unknown data type: {data_type}"
                 return pd.DataFrame(), report
-            
             metric_col = metric_columns[data_type]
-            
             if metric_col not in df.columns:
                 report['error'] = f"Metric column '{metric_col}' not found"
                 return pd.DataFrame(), report
-            
-            # Prepare data for Prophet (requires 'ds' and 'y' columns)
-            # Find the timestamp column - could be 'timestamp' or 'date'
-            timestamp_col_name = None
-            if 'timestamp' in df.columns:
-                timestamp_col_name = 'timestamp'
-            elif 'date' in df.columns:
-                timestamp_col_name = 'date'
-            else:
-                report['error'] = "No timestamp or date column found"
-                return pd.DataFrame(), report
-            
-            # Ensure timestamp is datetime type
-            timestamp_col = df[timestamp_col_name].copy()
-            if timestamp_col.dtype == 'object':
-                timestamp_col = pd.to_datetime(timestamp_col, errors='coerce')
-            
             prophet_df = pd.DataFrame({
-                'ds': timestamp_col,
+                'ds': pd.to_datetime(df['timestamp']).dt.tz_localize(None) if pd.api.types.is_datetime64_any_dtype(df['timestamp']) else df['timestamp'],
                 'y': df[metric_col]
             })
-            
-            # Remove timezone if present (Prophet doesn't support timezones)
-            if hasattr(prophet_df['ds'].dtype, 'tz') and prophet_df['ds'].dt.tz is not None:
-                try:
-                    # Method 1: Direct timezone removal
-                    if prophet_df['ds'].dt.tz is not None:
-                        prophet_df['ds'] = prophet_df['ds'].dt.tz_localize(None)
-                    
-                    # Method 2: Force conversion to ensure no timezone
-                    prophet_df['ds'] = pd.to_datetime(prophet_df['ds'], utc=False)
-                    
-                    # Method 3: Fallback - convert to string and back
-                    if hasattr(prophet_df['ds'].dtype, 'tz') and prophet_df['ds'].dtype.tz is not None:
-                        prophet_df['ds'] = pd.to_datetime(prophet_df['ds'].dt.strftime('%Y-%m-%d %H:%M:%S'))
-                    
-                except Exception as tz_error:
-                    # Ultimate fallback: convert to string and back to datetime without timezone
-                    prophet_df['ds'] = pd.to_datetime(prophet_df['ds'].astype(str))
-            
-            # Remove any NaN values
             prophet_df = prophet_df.dropna()
-            
             if len(prophet_df) < 2:
                 report['error'] = "Insufficient data for modeling"
                 return pd.DataFrame(), report
-            
-            st.write("Fitting linear regression model for trend modeling...")
-            
-            # Create time index for linear regression
-            prophet_df['time_index'] = np.arange(len(prophet_df))
-            
-            # Fit linear model
-            from sklearn.linear_model import LinearRegression
-            model = LinearRegression()
-            model.fit(prophet_df[['time_index']], prophet_df['y'])
-            
-            # Predict on historical + future data
-            future_indices = np.arange(len(prophet_df), len(prophet_df) + forecast_periods)
-            all_indices = np.concatenate([prophet_df['time_index'].values, future_indices])
-            
-            predictions = model.predict(all_indices.reshape(-1, 1))
-            
-            # Create forecast dataframe with historical and future dates
-            historical_dates = prophet_df['ds']
-            future_dates = pd.date_range(
-                prophet_df['ds'].max() + pd.Timedelta(minutes=1), 
-                periods=forecast_periods, 
-                freq='min'
+            from prophet import Prophet
+            import prophet
+            model = Prophet(
+                daily_seasonality=True,
+                weekly_seasonality=False,
+                yearly_seasonality=False,
+                changepoint_prior_scale=0.05,
+                interval_width=0.95
             )
-            
-            all_dates = pd.concat([historical_dates, pd.Series(future_dates)], ignore_index=True)
-            
-            forecast = pd.DataFrame({
-                'ds': all_dates,
-                'yhat': predictions,
-                'yhat_lower': predictions - 5,  # Simple confidence interval
-                'yhat_upper': predictions + 5
-            })
-            
-            st.write(f"Forecast created with {len(forecast)} predictions ({len(prophet_df)} historical + {forecast_periods} future)")
-            
-            # Calculate residuals for anomaly detection
+            st.write("Fitting Prophet model...")
+            model.fit(prophet_df)
+            future = model.make_future_dataframe(periods=forecast_periods, freq='min')
+            forecast = model.predict(future)
             merged = prophet_df.merge(forecast[['ds', 'yhat', 'yhat_lower', 'yhat_upper']], 
                                      on='ds', how='left')
             merged['residual'] = merged['y'] - merged['yhat']
             merged['residual_abs'] = np.abs(merged['residual'])
-            
-            # Store results
             self.models[data_type] = model
             self.forecasts[data_type] = forecast
             self.residuals[data_type] = merged
-            
-            # Calculate metrics
             report['mae'] = merged['residual_abs'].mean()
             report['rmse'] = np.sqrt((merged['residual'] ** 2).mean())
             report['mape'] = (merged['residual_abs'] / merged['y'].abs()).mean() * 100
             report['success'] = True
-            
             self.modeling_reports[data_type] = report
-            
-            st.success(f"✅ Linear regression model trained successfully")
+            st.success(f"✅ Prophet model trained successfully")
             st.write(f"MAE: {report['mae']:.2f}, RMSE: {report['rmse']:.2f}, MAPE: {report['mape']:.2f}%")
-            
             return forecast, report
-            
         except Exception as e:
-            print(f"Trend modeling failed: {str(e)}")
-            st.error(f"Trend modeling failed: {str(e)}")
             report['error'] = str(e)
-            # Fallback forecasting
-            st.info("Using simple forecasting as fallback")
-            
-            # Create a simple forecast based on the original data
-            # Ensure we have valid data to work with
-            if 'ds' in locals() and 'prophet_df' in locals() and not prophet_df.empty:
-                # Create future dataframe using the last timestamp
-                last_ts = prophet_df['ds'].max()
-                future = pd.DataFrame({'ds': pd.date_range(start=last_ts + pd.Timedelta(minutes=1), periods=forecast_periods, freq='min')})
-                last_value = prophet_df['y'].iloc[-1] if len(prophet_df) > 0 else 0
-            else:
-                # If we can't prepare prophet_df, use basic forecasting
-                last_ts = pd.to_datetime(df['timestamp'].max()) if 'timestamp' in df.columns else pd.Timestamp.now()
-                future = pd.DataFrame({'ds': pd.date_range(start=last_ts + pd.Timedelta(minutes=1), periods=forecast_periods, freq='min')})
-                last_value = df[metric_col].iloc[-1] if metric_col in df.columns and len(df) > 0 else 0
-            
-            forecast = pd.DataFrame({
-                'ds': future['ds'],
-                'yhat': last_value,
-                'yhat_lower': last_value * 0.9,
-                'yhat_upper': last_value * 1.1
-            })
-            # Calculate simple residuals
-            merged = prophet_df.copy()
-            merged['yhat'] = last_value
-            merged['yhat_lower'] = last_value * 0.9
-            merged['yhat_upper'] = last_value * 1.1
-            merged['residual'] = merged['y'] - merged['yhat']
-            merged['residual_abs'] = np.abs(merged['residual'])
-            
-            # Store results
-            self.models[data_type] = None  # No model
-            self.forecasts[data_type] = forecast
-            self.residuals[data_type] = merged
-            
-            # Simple metrics
-            report['mae'] = merged['residual_abs'].mean()
-            report['rmse'] = np.sqrt((merged['residual'] ** 2).mean())
-            report['mape'] = (merged['residual_abs'] / merged['y'].abs()).mean() * 100
-            report['success'] = True
-            report['method'] = 'Simple Fallback'
-            
-            return forecast, report
-    
+            st.error(f"❌ Prophet modeling failed: {str(e)}")
+            return pd.DataFrame(), report
     def visualize_forecast(self, data_type: str, df_original: pd.DataFrame):
-        """Visualize Prophet forecast with confidence intervals"""
-        
         if data_type not in self.forecasts:
             st.warning(f"No forecast available for {data_type}")
             return
-        
         forecast = self.forecasts[data_type]
         residuals = self.residuals[data_type]
-        
-        # Identify metric column
         metric_columns = {
             'heart_rate': 'heart_rate',
             'steps': 'step_count',
             'sleep': 'duration_minutes'
         }
         metric_col = metric_columns.get(data_type)
-        
         if metric_col not in df_original.columns:
             return
-        
-        # Create figure
         fig = go.Figure()
-        
-        # Add actual values
         fig.add_trace(go.Scatter(
             x=df_original['timestamp'],
             y=df_original[metric_col],
@@ -2388,8 +2242,6 @@ class TrendModeler:
             name='Actual',
             marker=dict(size=4, color='blue')
         ))
-        
-        # Add forecast
         fig.add_trace(go.Scatter(
             x=forecast['ds'],
             y=forecast['yhat'],
@@ -2397,8 +2249,6 @@ class TrendModeler:
             name='Forecast',
             line=dict(color='red', width=2)
         ))
-        
-        # Add confidence intervals
         fig.add_trace(go.Scatter(
             x=forecast['ds'],
             y=forecast['yhat_upper'],
@@ -2407,7 +2257,6 @@ class TrendModeler:
             line=dict(width=0),
             showlegend=False
         ))
-        
         fig.add_trace(go.Scatter(
             x=forecast['ds'],
             y=forecast['yhat_lower'],
@@ -2418,7 +2267,6 @@ class TrendModeler:
             line=dict(width=0),
             showlegend=False
         ))
-        
         fig.update_layout(
             title=f"Prophet Forecast: {data_type.replace('_', ' ').title()}",
             xaxis_title="Time",
@@ -2426,28 +2274,17 @@ class TrendModeler:
             hovermode='x unified',
             height=500
         )
-        
         st.plotly_chart(fig, use_container_width=True)
-        
-        # Visualize residuals
         self._visualize_residuals(data_type)
-    
     def _visualize_residuals(self, data_type: str):
-        """Visualize model residuals for anomaly detection"""
-        
         if data_type not in self.residuals:
             return
-        
         residuals = self.residuals[data_type]
-        
-        # Create residual plot
         fig = make_subplots(
             rows=2, cols=1,
             subplot_titles=('Residuals Over Time', 'Residual Distribution'),
             row_heights=[0.6, 0.4]
         )
-        
-        # Residuals over time
         fig.add_trace(
             go.Scatter(
                 x=residuals['ds'],
@@ -2458,11 +2295,7 @@ class TrendModeler:
             ),
             row=1, col=1
         )
-        
-        # Add zero line
         fig.add_hline(y=0, line_dash="dash", line_color="gray", row=1, col=1)
-        
-        # Residual distribution
         fig.add_trace(
             go.Histogram(
                 x=residuals['residual'],
@@ -2472,52 +2305,30 @@ class TrendModeler:
             ),
             row=2, col=1
         )
-        
         fig.update_xaxes(title_text="Time", row=1, col=1)
         fig.update_yaxes(title_text="Residual", row=1, col=1)
         fig.update_xaxes(title_text="Residual Value", row=2, col=1)
         fig.update_yaxes(title_text="Frequency", row=2, col=1)
-        
         fig.update_layout(
             title_text="Prophet Model Residuals (for Anomaly Detection)",
             height=700,
             showlegend=False
         )
-        
         st.plotly_chart(fig, use_container_width=True)
-    
     def get_anomalies_from_residuals(self, data_type: str, 
                                     threshold_std: float = 3.0) -> pd.DataFrame:
-        """
-        Identify anomalies based on residuals
-        
-        Args:
-            data_type: Type of data
-            threshold_std: Number of standard deviations for anomaly threshold
-            
-        Returns:
-            Dataframe with anomalies
-        """
         if data_type not in self.residuals:
             return pd.DataFrame()
-        
         residuals = self.residuals[data_type]
-        
-        # Calculate threshold
         mean_residual = residuals['residual'].mean()
         std_residual = residuals['residual'].std()
         threshold = threshold_std * std_residual
-        
-        # Identify anomalies
         anomalies = residuals[
             (residuals['residual'] > mean_residual + threshold) |
             (residuals['residual'] < mean_residual - threshold)
         ].copy()
-        
         anomalies['anomaly_score'] = np.abs(anomalies['residual'] - mean_residual) / std_residual
-        
         return anomalies
-    
 
 
 
@@ -2857,126 +2668,75 @@ class DataComparison:
 
 class FeatureModelingPipeline:
     """Complete pipeline for Milestone 2: Feature Extraction and Modeling"""
-    
     def __init__(self):
         self.feature_extractor = TSFreshFeatureExtractor(feature_complexity='efficient')
-        self.trend_modeler = TrendModeler()
+        self.trend_modeler = ProphetTrendModeler()
         self.clusterer = BehaviorClusterer()
-        
         self.feature_matrices = {}
         self.all_reports = {}
-    
     def run_complete_milestone2(self, processed_data: Dict[str, pd.DataFrame],
                                window_size: int = 60,
                                forecast_periods: int = 100,
                                clustering_method: str = 'kmeans',
                                n_clusters: int = 3) -> Dict:
-        
-        
-
-        """
-        Run complete Milestone 2 pipeline
-        
-        Args:
-            processed_data: Dictionary of preprocessed dataframes from Milestone 1
-            window_size: Window size for feature extraction
-            forecast_periods: Forecast horizon for Prophet
-            clustering_method: 'kmeans' or 'dbscan'
-            n_clusters: Number of clusters
-            
-        Returns:
-            Dictionary containing all results and reports
-        """
-        st.markdown("""
-            <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-                        padding: 2rem; border-radius: 20px; margin-bottom: 2rem; box-shadow: 0 10px 30px rgba(102, 126, 234, 0.3);">
-                <h2 style="color: white; margin: 0; font-size: 2rem; font-weight: 800; text-align: center;">
-                    🔬 Milestone 2: Feature Extraction and Modeling
-                </h2>
-                <p style="color: rgba(255,255,255,0.9); text-align: center; margin: 0.5rem 0 0 0; font-size: 1.1rem;">
-                    Advanced ML Pipeline Processing
-                </p>
-            </div>
-        """, unsafe_allow_html=True)
-        
+        st.write("")
+        st.divider()
+        st.header("🔬Extraction and Modeling")
         results = {
             'feature_matrices': {},
             'forecasts': {},
             'cluster_labels': {},
             'reports': {}
         }
-
-        # 📊 Statistical Comparison across data types
-        comparison_stats = DataComparison.compare_datasets(processed_data)
-
-        if not comparison_stats.empty:
-          st.markdown("### 📊 Statistical Comparison")
-          st.dataframe(comparison_stats.astype(str), use_container_width=True)
-        
         for data_type, df in processed_data.items():
-             
-
-             with st.container(border=True):
-                st.subheader(f"📊 {data_type.replace('_', ' ').title()} Analysis")
-
-        # Step 1: Feature Extraction
-                with st.spinner(f"🔄 Extracting features from {data_type}..."):
-                 feature_matrix, extraction_report = self.feature_extractor.extract_features(
-                   df, data_type, window_size
+            st.subheader(f"📊 Processing {data_type.replace('_', ' ').title()}")
+            # Step 1: Feature Extraction with TSFresh
+            with st.expander(f"🔵 Step 1: Extract Features - {data_type}", expanded=True):
+                feature_matrix, extraction_report = self.feature_extractor.extract_features(
+                    df, data_type, window_size
                 )
-
                 if not feature_matrix.empty:
-                   results['feature_matrices'][data_type] = feature_matrix
-                   results['reports'][f'{data_type}_extraction'] = extraction_report
-                   st.success(
-                    f"✅ Extracted {extraction_report.get('features_extracted', 0)} "
-                    f"features from {extraction_report.get('feature_windows', 0)} windows"
-                   )
-                else:
-                    st.error(f"❌ Feature extraction failed for {data_type}")
-
-        # Step 2: Trend Modeling
-                with st.spinner(f"🔮 Modeling trends for {data_type}..."):
-                   forecast, modeling_report = self.trend_modeler.fit_and_predict(
+                    results['feature_matrices'][data_type] = feature_matrix
+                    results['reports'][f'{data_type}_extraction'] = extraction_report
+                    st.write("**Top Features by Variance:**")
+                    top_features = self.feature_extractor.get_top_features(10)
+                    if not top_features.empty:
+                        top_features['Feature'] = top_features['Feature'].astype(str)
+                    st.dataframe(top_features, use_container_width=True)
+                    self.feature_extractor.visualize_feature_distributions(6)
+            # Step 2: Trend Modeling with Prophet
+            with st.expander(f"🟡 Step 2: Model Trends with Prophet - {data_type}", expanded=True):
+                forecast, modeling_report = self.trend_modeler.fit_and_predict(
                     df, data_type, forecast_periods
-                   )
-
-                   if not forecast.empty:
-                     results['forecasts'][data_type] = forecast
-                     results['reports'][f'{data_type}_modeling'] = modeling_report
-                     st.success(f"✅ Prophet forecasting completed for {data_type}")
-                   else:
-                     st.warning(f"⚠️ Prophet forecasting failed for {data_type}")
-
-        # Step 3: Clustering
-                with st.spinner(f"🔗 Clustering patterns for {data_type}..."):
-                    if data_type in results['feature_matrices']:
-                        feature_matrix = results['feature_matrices'][data_type]
-
-                        labels, clustering_report = self.clusterer.cluster_features(
-                            feature_matrix, data_type, clustering_method, n_clusters
+                )
+                if not forecast.empty:
+                    results['forecasts'][data_type] = forecast
+                    results['reports'][f'{data_type}_modeling'] = modeling_report
+                    self.trend_modeler.visualize_forecast(data_type, df)
+                    anomalies = self.trend_modeler.get_anomalies_from_residuals(
+                        data_type, threshold_std=3.0
+                    )
+                    if not anomalies.empty:
+                        st.write(f"**detected {len(anomalies)} potential anomalies**")
+                        st.dataframe(anomalies.head(10), use_container_width=True)
+            # Step 3: Clustering
+            with st.expander(f"🟢 Step 3: Cluster Behavioral Patterns - {data_type}", expanded=True):
+                if data_type in results['feature_matrices']:
+                    feature_matrix = results['feature_matrices'][data_type]
+                    labels, clustering_report = self.clusterer.cluster_features(
+                        feature_matrix, data_type, clustering_method, n_clusters
+                    )
+                    if len(labels) > 0:
+                        results['cluster_labels'][data_type] = labels
+                        results['reports'][f'{data_type}_clustering'] = clustering_report
+                        self.clusterer.reduce_and_visualize(
+                            feature_matrix, data_type, method='pca'
                         )
-
-                        if len(labels) > 0:
-                            results['cluster_labels'][data_type] = labels
-                            results['reports'][f'{data_type}_clustering'] = clustering_report
-                            st.success(
-                                f"✅ Clustering completed for {data_type} "
-                                f"({len(set(labels))} clusters)"
-                            )
-                        else:
-                            st.warning(f"⚠️ Clustering failed for {data_type}")
-
-                
-                st.markdown("""
-                    <div style="margin: 2rem 0; height: 2px; background: linear-gradient(90deg, 
-                                rgba(102, 126, 234, 0.3) 0%, rgba(118, 75, 162, 0.3) 50%, rgba(102, 126, 234, 0.3) 100%);"></div>
-                """, unsafe_allow_html=True)
-        
-       
-        
+            st.markdown("---")
+        self._generate_milestone2_summary(results)
         return results
-
+    def _generate_milestone2_summary(self, results: Dict):
+        pass
 
 def add_milestone2_ui(processed_data):
     """Add Milestone 2 UI section to the main app"""
@@ -3115,9 +2875,12 @@ class AnomalyDetectionPipeline:
             # =========================================
             # RUN ALL ANOMALY DETECTION METHODS (ONCE)
             # =========================================
-
+            st.write("")
+            st.write("")
+            st.header("🚨Anomaly Detection")
+            st.write("")
             st.markdown("---")
-            st.subheader("🔍 Anomaly Detection Methods")
+           
 
             results = {
                 "reports": {},
@@ -3164,56 +2927,12 @@ class AnomalyDetectionPipeline:
                 self.processed_data[data_type] = df_final
 
 
-            # =========================================
-            # METHOD DESCRIPTIONS (DISPLAYED ONCE)
-            # =========================================
-
-            with st.expander("🟡 Method 1: Threshold-Based Detection", expanded=True):
-                st.write("Detects anomalies using fixed minimum and maximum thresholds.")
-                st.write("**Thresholds:** Min=40, Max=120, Sustained=10 minutes")
-
-            with st.expander("🔴 Method 2: Prophet Residual-Based Detection"):
-                st.write("Detects anomalies based on deviation from Prophet forecasts.")
-
-            with st.expander("🟣 Method 3: Cluster-Based Detection"):
-                st.write("Detects anomalies based on distance from cluster centroids.")
 
 
             # =========================================
             # VISUALIZATIONS (PER DATA TYPE ONLY)
             # =========================================
 
-            for data_type, df_final in results["data_with_anomalies"].items():
-
-                st.markdown("---")
-                st.subheader(f"📈 Visualizations - {data_type.replace('_', ' ').title()}")
-
-                try:
-                    if data_type == "heart_rate":
-                        self.visualizer.plot_heart_rate_anomalies(
-                            df_final,
-                            title="Heart Rate Anomaly Detection Results"
-                        )
-
-                    elif data_type == "steps":
-                        self.visualizer.plot_steps_anomalies(
-                            df_final,
-                            title="Step Count Anomaly Detection Results"
-                        )
-
-                    elif data_type == "sleep":
-                        self.visualizer.plot_sleep_anomalies(
-                            df_final,
-                            title="Sleep Pattern Anomaly Detection Results"
-                        )
-
-                    else:
-                        st.warning(f"No visualization available for {data_type}")
-
-                except Exception as viz_error:
-                    st.error(f"❌ Error creating visualization for {data_type}: {viz_error}")
-                    st.write("**Raw Data with Anomalies:**")
-                    st.dataframe(df_final.head(20).astype(str), use_container_width=True)
 
         except Exception as e:
             st.error(f"❌ Error in Milestone 3 pipeline: {str(e)}")
@@ -3237,7 +2956,7 @@ class AnomalyDetectionPipeline:
                 st.error("❌ No anomaly data found in results")
                 return
 
-            st.header("🚨 Milestone 3: Anomaly Detection Summary")
+           
             st.markdown("**Complete analysis results overview**")
 
             # Clean summary metrics
@@ -3298,21 +3017,21 @@ class AnomalyDetectionPipeline:
                         else:
                             st.metric(f"{method.title()} Anomalies", "N/A")
 
-                # # Show visualization
-                # try:
-                #     if data_type == 'heart_rate':
-                #         self.visualizer.plot_heart_rate_anomalies(df, title=f"Heart Rate Anomalies")
-                #     elif data_type == 'steps':
-                #         self.visualizer.plot_steps_anomalies(df, title=f"Step Count Anomalies")
-                #     elif data_type == 'sleep':
-                #         self.visualizer.plot_sleep_anomalies(df, title=f"Sleep Pattern Anomalies")
-                #     else:
-                #         st.warning(f"No visualization available for {data_type}")
-                # except Exception as viz_error:
-                #     st.error(f"❌ Visualization error: {str(viz_error)}")
-                #     # Fallback: show basic dataframe
-                #     st.write("**Raw Data with Anomalies:**")
-                #     st.dataframe(df.head(20), use_container_width=True)
+                # Show visualization directly after metrics
+                try:
+                    if data_type == 'heart_rate':
+                        self.visualizer.plot_heart_rate_anomalies(df, title=f"Heart Rate Anomalies")
+                    elif data_type == 'steps':
+                        self.visualizer.plot_steps_anomalies(df, title=f"Step Count Anomalies")
+                    elif data_type == 'sleep':
+                        self.visualizer.plot_sleep_anomalies(df, title=f"Sleep Pattern Anomalies")
+                    else:
+                        st.warning(f"No visualization available for {data_type}")
+                except Exception as viz_error:
+                    st.error(f"❌ Visualization error: {str(viz_error)}")
+                    # Fallback: show basic dataframe
+                    st.write("**Raw Data with Anomalies:**")
+                    st.dataframe(df.head(20), use_container_width=True)
 
             # Generate comprehensive summary
             st.markdown("---")
@@ -3467,7 +3186,7 @@ def show_milestone2_results(milestone2_results):
                     padding: 2rem; border-radius: 20px; border-left: 6px solid #667eea; 
                     text-align: center; margin: 2rem 0; box-shadow: 0 8px 24px rgba(102, 126, 234, 0.15);">
             <h3 style="color: #667eea; font-weight: 800; font-size: 1.8rem; margin-bottom: 0.5rem;">
-                ✅ Milestone 2 Pipeline Completed!
+                            ✅ Extraction Completed!
             </h3>
             <p style="color: #495057; font-size: 1.1rem; margin: 0;">
                 Advanced ML features extracted and models trained successfully
@@ -3480,11 +3199,9 @@ def show_milestone2_results(milestone2_results):
         <div style="text-align: center; margin: 2rem 0 1.5rem 0;">
             <h2 style="font-size: 2.2rem; font-weight: 800; background: linear-gradient(135deg, #667eea, #764ba2); 
                        -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
-                🚀 Milestone 2: Advanced ML Results
+                Summary
             </h2>
-            <p style="color: #6c757d; font-size: 1rem; margin-top: 0.5rem;">
-                Feature extraction, forecasting, and clustering analysis complete
-            </p>
+            
         </div>
     """, unsafe_allow_html=True)
     
@@ -3655,19 +3372,17 @@ def show_milestone1_results(processed_data):
     st.divider()
     export_processed_data(processed_data)
     
-    # ========== TASK 3: TIMESTAMP VALIDATION DASHBOARD ==========
-    st.divider()
+    # ========== TIMESTAMP VALIDATION DASHBOARD ==========
+ 
     st.markdown("""
         <div style="text-align: center; margin: 1rem 0 1rem 0;">
-            <h2 style="font-size: 2.2rem; font-weight: 800; background: linear-gradient(135deg, #4facfe, #00f2fe); 
-                       -webkit-background-clip: text; -webkit-text-fill-color: transparent;">
-                🕒 Task 3: Timestamp Validation Dashboard
-            </h2>
-            <p style="color: #6c757d; font-size: 1rem; margin-top: 0.5rem;">
-                Comprehensive temporal analysis and data coverage insights
-            </p>
+           <h2 style="font-size: 2.2rem; font-weight: 800; color: black;">
+            🕒 Timestamp Validation 
+           </h2>
+
         </div>
     """, unsafe_allow_html=True)
+    st.divider()
     
     for data_type, df in processed_data.items():
         with st.expander(f"📅 {data_type.replace('_', ' ').title()} - Timestamp Analysis", expanded=False):
@@ -4393,8 +4108,6 @@ def main():
         """)
         
         st.divider()
-        
-        st.caption("🎓 Developed by: Rihana Fathima A")
        
     
     # Main content area
@@ -4497,75 +4210,62 @@ def main():
 """, unsafe_allow_html=True)
         uploaded_files = load_sample_csv_files()
     
-    # Premium Process button with enhanced styling
     st.markdown("<br>", unsafe_allow_html=True)
-    col1, col2, col3 = st.columns([1, 2, 1])
-    with col2:
-        st.markdown("""
-            <div style="text-align: center; margin: 1rem 0;">
-                <p style="font-size: 0.95rem; color: #212529; margin-bottom: 1rem;">
-                    Ready to process your data? Click below to start the pipeline
-                </p>
-            </div>
-        """, unsafe_allow_html=True)
-        process_button = st.button(
-            "🚀 Run Complete Preprocessing Pipeline",
-            type="primary",
-            use_container_width=True
-        )
+    process_button = st.button(
+        "🚀 Run Complete Pipeline",
+        type="primary",
+        use_container_width=True
+    )
     st.markdown("<br>", unsafe_allow_html=True)
-    
+
     if process_button:
         if uploaded_files:
-            with st.spinner("🔄 Processing data through complete pipeline..."):
+            with st.spinner("🔄 Processing data through all milestones..."):
                 try:
+                    # Milestone 1
                     processed_data = st.session_state.pipeline.run(
                         uploaded_files,
                         target_freq,
                         fill_method
                     )
-                    
-                    if processed_data:
-                        # Store processed data in session state for Milestone 2
-                        st.session_state.processed_data = processed_data
-                        st.success("✅ Milestone 1 Pipeline Complete!")
-                    else:
+                    if not processed_data:
                         st.error("❌ Pipeline failed to process data. Please check your input files.")
-                        
+                        return
+                    st.session_state.processed_data = processed_data
+                
+                    show_milestone1_results(processed_data)
+
+                    # Milestone 2
+                    if 'milestone2_pipeline' not in st.session_state:
+                        st.session_state.milestone2_pipeline = FeatureModelingPipeline()
+                    m2_results = st.session_state.milestone2_pipeline.run_complete_milestone2(
+                        processed_data=processed_data,
+                        window_size=st.session_state.get('window_size', 60),
+                        forecast_periods=st.session_state.get('forecast_periods', 100),
+                        clustering_method=st.session_state.get('clustering_method', 'kmeans'),
+                        n_clusters=st.session_state.get('n_clusters', 3)
+                    )
+                    st.session_state.milestone2_results = m2_results
+                    # st.success("✅ Milestone 2 Pipeline Complete!")
+                    show_milestone2_results(m2_results)
+
+                    # Milestone 3
+                    if 'milestone3_pipeline' not in st.session_state:
+                        st.session_state.milestone3_pipeline = AnomalyDetectionPipeline()
+                    m3_results = st.session_state.milestone3_pipeline.run_complete_milestone3(
+                        preprocessed_data=processed_data,
+                        prophet_forecasts=m2_results.get('forecasts'),
+                        cluster_labels=m2_results.get('cluster_labels'),
+                        feature_matrices=m2_results.get('feature_matrices')
+                    )
+                    st.session_state.milestone3_results = m3_results
+                    st.success("✅ Anomaly Detection Complete!")
+                    st.session_state.milestone3_pipeline.display_milestone3_results(m3_results)
                 except Exception as e:
                     st.error(f"❌ Error during processing: {str(e)}")
                     st.exception(e)
         else:
             st.warning("⚠️ Please upload files or enable sample data.")
-    
-    # Check if processed data exists in session state and show Milestone 1 results persistently
-    if 'processed_data' in st.session_state and st.session_state.processed_data:
-        show_milestone1_results(st.session_state.processed_data)
-        
-        # Show Milestone 2 UI persistently
-        add_milestone2_ui(st.session_state.processed_data)
-        
-        # Show Milestone 2 results persistently if they exist
-        if 'milestone2_results' in st.session_state and st.session_state.milestone2_results:
-            show_milestone2_results(st.session_state.milestone2_results)
-        
-        # Show Milestone 3 UI only after Milestone 2 is completed
-        if 'milestone2_results' in st.session_state:
-            add_milestone3_ui(st.session_state.processed_data)
-        
-        # Show Milestone 3 results persistently if they exist
-        if 'milestone3_results' in st.session_state and st.session_state.milestone3_results:
-            results = st.session_state.milestone3_results
-            if 'milestone3_pipeline' not in st.session_state:
-                st.session_state.milestone3_pipeline = AnomalyDetectionPipeline()
-
-            # Debug: Show results summary
-        
-
-            st.session_state.milestone3_pipeline.display_milestone3_results(results)
-        else:
-            if 'milestone2_results' in st.session_state:
-                st.info("ℹ️ Milestone 3: Ready to run anomaly detection. Click the button above.")
 
 
 if __name__ == "__main__":
